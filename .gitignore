@@ -1,0 +1,10 @@
+.env
+credentials.json
+gmail_token.json
+.venv/
+ai_agent/
+__pycache__/
+*.pyc
+uploads/
+.idea/
+.claude/
