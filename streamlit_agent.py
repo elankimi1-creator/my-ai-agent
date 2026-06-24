@@ -68,6 +68,10 @@ def load_gemini_key() -> str:
 
 
 def load_iac_token() -> str:
+    val = os.environ.get("IAC_TOKEN")
+    if val and val != "sk-std-YOUR-KEY":
+        return val
+
     env_path = Path(".env")
     if not env_path.exists():
         return None
