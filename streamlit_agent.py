@@ -93,15 +93,23 @@ def is_gemini_quota_error(e: Exception) -> bool:
 
 def get_gmail_service():
     creds = None
+    token_from_secret = os.environ.get("GMAIL_TOKEN_JSON")
+
     if Path(TOKEN_FILE).exists():
         creds = Credentials.from_authorized_user_file(TOKEN_FILE, GMAIL_SCOPES)
+    elif token_from_secret:
+        creds = Credentials.from_authorized_user_info(json.loads(token_from_secret), GMAIL_SCOPES)
+
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
+        elif token_from_secret:
+            raise RuntimeError("טוקן ה-Gmail בענן פג ואין אפשרות לפתוח דפדפן לאישור מחדש בענן.")
         else:
             flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_FILE, GMAIL_SCOPES)
             creds = flow.run_local_server(port=0)
-        Path(TOKEN_FILE).write_text(creds.to_json(), encoding="utf-8")
+        if not token_from_secret:
+            Path(TOKEN_FILE).write_text(creds.to_json(), encoding="utf-8")
     return build("gmail", "v1", credentials=creds)
 
 
