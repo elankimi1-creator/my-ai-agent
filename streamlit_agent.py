@@ -37,7 +37,10 @@ GEMINI_MODEL = "gemini-2.5-flash"
 IAC_BASE_URL = "https://server.iac.ac.il/api/v1/studentapi"
 IAC_MAX_TOKENS = 10000
 
-GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
+GOOGLE_SCOPES = [
+    "https://www.googleapis.com/auth/gmail.modify",
+    "https://www.googleapis.com/auth/calendar",
+]
 CREDENTIALS_FILE = "credentials.json"
 TOKEN_FILE = "gmail_token.json"
 
@@ -94,26 +97,34 @@ def is_gemini_quota_error(e: Exception) -> bool:
 # כלים: קבצים, shell, Gmail
 # ========================================================
 
-def get_gmail_service():
+def get_google_creds():
     creds = None
     token_from_secret = os.environ.get("GMAIL_TOKEN_JSON")
 
     if Path(TOKEN_FILE).exists():
-        creds = Credentials.from_authorized_user_file(TOKEN_FILE, GMAIL_SCOPES)
+        creds = Credentials.from_authorized_user_file(TOKEN_FILE, GOOGLE_SCOPES)
     elif token_from_secret:
-        creds = Credentials.from_authorized_user_info(json.loads(token_from_secret), GMAIL_SCOPES)
+        creds = Credentials.from_authorized_user_info(json.loads(token_from_secret), GOOGLE_SCOPES)
 
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         elif token_from_secret:
-            raise RuntimeError("טוקן ה-Gmail בענן פג ואין אפשרות לפתוח דפדפן לאישור מחדש בענן.")
+            raise RuntimeError("טוקן ה-Google בענן פג ואין אפשרות לפתוח דפדפן לאישור מחדש בענן.")
         else:
-            flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_FILE, GMAIL_SCOPES)
+            flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_FILE, GOOGLE_SCOPES)
             creds = flow.run_local_server(port=0)
         if not token_from_secret:
             Path(TOKEN_FILE).write_text(creds.to_json(), encoding="utf-8")
-    return build("gmail", "v1", credentials=creds)
+    return creds
+
+
+def get_gmail_service():
+    return build("gmail", "v1", credentials=get_google_creds())
+
+
+def get_calendar_service():
+    return build("calendar", "v3", credentials=get_google_creds())
 
 
 def tool_read_file(path: str) -> str:
@@ -198,6 +209,46 @@ def tool_list_recent_emails(max_results: int = 5) -> str:
         return "\n".join(summaries)
     except Exception as e:
         return f"שגיאה בקריאת המיילים: {e}"
+
+
+# ========================================================
+# כלים: Google Calendar
+# ========================================================
+
+def tool_create_calendar_event(summary: str, start: str, end: str, description: str = "") -> str:
+    try:
+        service = get_calendar_service()
+        event = {
+            "summary": summary,
+            "description": description,
+            "start": {"dateTime": start, "timeZone": "Asia/Jerusalem"},
+            "end": {"dateTime": end, "timeZone": "Asia/Jerusalem"},
+        }
+        created = service.events().insert(calendarId="primary", body=event).execute()
+        return f"האירוע '{summary}' נוצר בהצלחה בלוח השנה. קישור: {created.get('htmlLink', '')}"
+    except Exception as e:
+        return f"שגיאה ביצירת אירוע בלוח השנה: {e}"
+
+
+def tool_list_calendar_events(max_results: int = 10) -> str:
+    try:
+        from datetime import datetime, timezone
+        service = get_calendar_service()
+        now = datetime.now(timezone.utc).isoformat()
+        results = service.events().list(
+            calendarId="primary", timeMin=now, maxResults=max_results,
+            singleEvents=True, orderBy="startTime",
+        ).execute()
+        events = results.get("items", [])
+        if not events:
+            return "אין אירועים קרובים בלוח השנה."
+        summaries = []
+        for ev in events:
+            start = ev["start"].get("dateTime", ev["start"].get("date"))
+            summaries.append(f"{start} | {ev.get('summary', '(ללא כותרת)')}")
+        return "\n".join(summaries)
+    except Exception as e:
+        return f"שגיאה בקריאת לוח השנה: {e}"
 
 
 # ========================================================
@@ -322,6 +373,8 @@ TOOL_FUNCTIONS = {
     "run_shell": tool_run_shell,
     "send_email": tool_send_email,
     "list_recent_emails": tool_list_recent_emails,
+    "create_calendar_event": tool_create_calendar_event,
+    "list_calendar_events": tool_list_calendar_events,
     "create_word_doc": tool_create_word_doc,
     "create_pptx": tool_create_pptx,
     "create_excel": tool_create_excel,
@@ -384,6 +437,31 @@ TOOLS_SCHEMA = [
             "type": "object",
             "properties": {
                 "max_results": {"type": "integer", "description": "כמה מיילים להחזיר (ברירת מחדל 5)"}
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "create_calendar_event",
+        "description": "יוצר אירוע אמיתי בלוח השנה של Google של המשתמש (תזכורת, פגישה, וכו').",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "summary": {"type": "string", "description": "כותרת/שם האירוע"},
+                "start": {"type": "string", "description": "זמן התחלה בפורמט ISO 8601, למשל '2026-06-26T15:00:00'"},
+                "end": {"type": "string", "description": "זמן סיום בפורמט ISO 8601, למשל '2026-06-26T16:00:00'"},
+                "description": {"type": "string", "description": "תיאור נוסף לאירוע (אופציונלי)"},
+            },
+            "required": ["summary", "start", "end"],
+        },
+    },
+    {
+        "name": "list_calendar_events",
+        "description": "מחזיר רשימה של האירועים הקרובים בלוח השנה של המשתמש.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "max_results": {"type": "integer", "description": "כמה אירועים להחזיר (ברירת מחדל 10)"}
             },
             "required": [],
         },
@@ -470,6 +548,8 @@ SYSTEM_INSTRUCTION = (
     "(Word/PowerPoint/Excel/תמונה שנוצר או הועלה קודם), העבר את הנתיב שלו בפרמטר attachments. "
     "קישורים אפשר לכתוב בתוך גוף ה-body כטקסט רגיל.\n"
     "- list_recent_emails: קורא מיילים אמיתיים מהתיבה.\n"
+    "- create_calendar_event, list_calendar_events: יוצרים/קוראים אירועים אמיתיים בלוח השנה "
+    "של Google של המשתמש. כשמתבקש לקבוע/לתזכר משהו בתאריך ושעה, תקרא לכלי הזה ממש.\n"
     "- create_word_doc, create_pptx, create_excel: יוצרים קבצים אמיתיים בדיסק שהמשתמש יכול להוריד.\n"
     "- web_search: מחפש מידע עדכני באינטרנט באמת.\n"
     "- read_file, write_file, run_shell: גישה אמיתית למערכת הקבצים ולמסוף.\n"
