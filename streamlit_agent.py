@@ -8,6 +8,9 @@ import base64
 import json
 import os
 import time
+from email import encoders
+from email.mime.base import MIMEBase
+from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
 
@@ -138,14 +141,39 @@ def tool_run_shell(command: str) -> str:
         return f"שגיאה בהרצת הפקודה: {e}"
 
 
-def tool_send_email(to: str, subject: str, body: str) -> str:
+def tool_send_email(to: str, subject: str, body: str, attachments: list = None) -> str:
     try:
         service = get_gmail_service()
-        message = MIMEText(body)
+
+        if attachments:
+            message = MIMEMultipart()
+            message.attach(MIMEText(body))
+            attached_names = []
+            missing = []
+            for path_str in attachments:
+                p = Path(path_str)
+                if not p.exists():
+                    missing.append(path_str)
+                    continue
+                part = MIMEBase("application", "octet-stream")
+                part.set_payload(p.read_bytes())
+                encoders.encode_base64(part)
+                part.add_header("Content-Disposition", f'attachment; filename="{p.name}"')
+                message.attach(part)
+                attached_names.append(p.name)
+            if missing:
+                return f"שגיאה: הקבצים הבאים לא נמצאו ולא נשלחו: {', '.join(missing)}"
+        else:
+            message = MIMEText(body)
+            attached_names = []
+
         message["to"] = to
         message["subject"] = subject
         raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
         service.users().messages().send(userId="me", body={"raw": raw}).execute()
+
+        if attached_names:
+            return f"המייל נשלח בהצלחה ל-{to} עם הקבצים המצורפים: {', '.join(attached_names)}."
         return f"המייל נשלח בהצלחה ל-{to}."
     except Exception as e:
         return f"שגיאה בשליחת המייל: {e}"
@@ -333,13 +361,18 @@ TOOLS_SCHEMA = [
     },
     {
         "name": "send_email",
-        "description": "שולח מייל מתיבת הדואר של המשתמש (Gmail) לכתובת נתונה.",
+        "description": "שולח מייל מתיבת הדואר של המשתמש (Gmail) לכתובת נתונה. ניתן לצרף קבצים (Word/PowerPoint/Excel/תמונות) ולהוסיף קישורים בתוך גוף הטקסט.",
         "parameters": {
             "type": "object",
             "properties": {
                 "to": {"type": "string", "description": "כתובת המייל של הנמען"},
                 "subject": {"type": "string", "description": "נושא המייל"},
-                "body": {"type": "string", "description": "תוכן המייל"},
+                "body": {"type": "string", "description": "תוכן המייל (אפשר לכלול קישורים כטקסט רגיל, הם יוצגו כניתנים ללחיצה)"},
+                "attachments": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "רשימת נתיבי קבצים לצירוף למייל (למשל קובץ Word/PowerPoint/Excel שנוצר קודם, או קובץ תמונה שהועלה)",
+                },
             },
             "required": ["to", "subject", "body"],
         },
@@ -433,7 +466,9 @@ SYSTEM_INSTRUCTION = (
     "אתה סוכן AI פעיל עם גישה אמיתית לכלים הבאים, ואתה חייב להשתמש בהם בפועל ולא רק לתאר מה "
     "אפשר לעשות:\n"
     "- send_email: שולח מייל אמיתי מתיבת ה-Gmail המחוברת של המשתמש. כשמתבקש לשלוח מייל, "
-    "תקרא לכלי הזה ממש - אל תכתוב שאינך יכול לשלוח מיילים.\n"
+    "תקרא לכלי הזה ממש - אל תכתוב שאינך יכול לשלוח מיילים. אם המשתמש מבקש לצרף קובץ "
+    "(Word/PowerPoint/Excel/תמונה שנוצר או הועלה קודם), העבר את הנתיב שלו בפרמטר attachments. "
+    "קישורים אפשר לכתוב בתוך גוף ה-body כטקסט רגיל.\n"
     "- list_recent_emails: קורא מיילים אמיתיים מהתיבה.\n"
     "- create_word_doc, create_pptx, create_excel: יוצרים קבצים אמיתיים בדיסק שהמשתמש יכול להוריד.\n"
     "- web_search: מחפש מידע עדכני באינטרנט באמת.\n"
