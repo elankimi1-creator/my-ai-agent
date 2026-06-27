@@ -40,6 +40,10 @@ IAC_MAX_TOKENS = 10000
 GOOGLE_SCOPES = [
     "https://www.googleapis.com/auth/gmail.modify",
     "https://www.googleapis.com/auth/calendar",
+    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/documents",
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/presentations",
 ]
 CREDENTIALS_FILE = "credentials.json"
 TOKEN_FILE = "gmail_token.json"
@@ -125,6 +129,22 @@ def get_gmail_service():
 
 def get_calendar_service():
     return build("calendar", "v3", credentials=get_google_creds())
+
+
+def get_drive_service():
+    return build("drive", "v3", credentials=get_google_creds())
+
+
+def get_docs_service():
+    return build("docs", "v1", credentials=get_google_creds())
+
+
+def get_sheets_service():
+    return build("sheets", "v4", credentials=get_google_creds())
+
+
+def get_slides_service():
+    return build("slides", "v1", credentials=get_google_creds())
 
 
 def tool_read_file(path: str) -> str:
@@ -252,6 +272,99 @@ def tool_list_calendar_events(max_results: int = 10) -> str:
 
 
 # ========================================================
+# כלים: Google Drive / Docs / Sheets / Slides
+# ========================================================
+
+def tool_search_drive_files(query: str, max_results: int = 10) -> str:
+    try:
+        service = get_drive_service()
+        results = service.files().list(
+            q=f"name contains '{query}'", pageSize=max_results,
+            fields="files(id, name, mimeType, webViewLink)",
+        ).execute()
+        files = results.get("files", [])
+        if not files:
+            return "לא נמצאו קבצים מתאימים ב-Drive."
+        return "\n".join(f"{f['name']} ({f['mimeType']}) | {f.get('webViewLink', '')}" for f in files)
+    except Exception as e:
+        return f"שגיאה בחיפוש ב-Drive: {e}"
+
+
+def tool_create_google_doc(title: str, content: str) -> str:
+    try:
+        docs_service = get_docs_service()
+        doc = docs_service.documents().create(body={"title": title}).execute()
+        doc_id = doc["documentId"]
+        if content:
+            docs_service.documents().batchUpdate(
+                documentId=doc_id,
+                body={"requests": [{"insertText": {"location": {"index": 1}, "text": content}}]},
+            ).execute()
+        return f"מסמך Google Docs '{title}' נוצר בהצלחה: https://docs.google.com/document/d/{doc_id}/edit"
+    except Exception as e:
+        return f"שגיאה ביצירת מסמך Google Docs: {e}"
+
+
+def tool_create_google_sheet(title: str, headers: list, rows: list) -> str:
+    try:
+        sheets_service = get_sheets_service()
+        sheet = sheets_service.spreadsheets().create(body={"properties": {"title": title}}).execute()
+        sheet_id = sheet["spreadsheetId"]
+        values = ([headers] if headers else []) + (rows or [])
+        if values:
+            sheets_service.spreadsheets().values().update(
+                spreadsheetId=sheet_id, range="A1",
+                valueInputOption="RAW", body={"values": values},
+            ).execute()
+        return f"גיליון Google Sheets '{title}' נוצר בהצלחה: https://docs.google.com/spreadsheets/d/{sheet_id}/edit"
+    except Exception as e:
+        return f"שגיאה ביצירת גיליון Google Sheets: {e}"
+
+
+def tool_create_google_slides(title: str, slides: list) -> str:
+    try:
+        slides_service = get_slides_service()
+        presentation = slides_service.presentations().create(body={"title": title}).execute()
+        pres_id = presentation["presentationId"]
+
+        requests_batch = []
+        for slide_data in slides:
+            slide_id = f"slide_{len(requests_batch)}"
+            requests_batch.append({
+                "createSlide": {
+                    "objectId": slide_id,
+                    "slideLayoutReference": {"predefinedLayout": "TITLE_AND_BODY"},
+                    "placeholderIdMappings": [
+                        {"layoutPlaceholder": {"type": "TITLE"}, "objectId": f"{slide_id}_title"},
+                        {"layoutPlaceholder": {"type": "BODY"}, "objectId": f"{slide_id}_body"},
+                    ],
+                }
+            })
+        if requests_batch:
+            slides_service.presentations().batchUpdate(
+                presentationId=pres_id, body={"requests": requests_batch}
+            ).execute()
+
+        text_requests = []
+        for i, slide_data in enumerate(slides):
+            slide_id = f"slide_{i}"
+            text_requests.append({
+                "insertText": {"objectId": f"{slide_id}_title", "text": slide_data.get("title", "")}
+            })
+            text_requests.append({
+                "insertText": {"objectId": f"{slide_id}_body", "text": slide_data.get("content", "")}
+            })
+        if text_requests:
+            slides_service.presentations().batchUpdate(
+                presentationId=pres_id, body={"requests": text_requests}
+            ).execute()
+
+        return f"מצגת Google Slides '{title}' נוצרה בהצלחה: https://docs.google.com/presentation/d/{pres_id}/edit"
+    except Exception as e:
+        return f"שגיאה ביצירת מצגת Google Slides: {e}"
+
+
+# ========================================================
 # כלים: Word / PowerPoint
 # ========================================================
 
@@ -375,6 +488,10 @@ TOOL_FUNCTIONS = {
     "list_recent_emails": tool_list_recent_emails,
     "create_calendar_event": tool_create_calendar_event,
     "list_calendar_events": tool_list_calendar_events,
+    "search_drive_files": tool_search_drive_files,
+    "create_google_doc": tool_create_google_doc,
+    "create_google_sheet": tool_create_google_sheet,
+    "create_google_slides": tool_create_google_slides,
     "create_word_doc": tool_create_word_doc,
     "create_pptx": tool_create_pptx,
     "create_excel": tool_create_excel,
@@ -467,6 +584,71 @@ TOOLS_SCHEMA = [
         },
     },
     {
+        "name": "search_drive_files",
+        "description": "מחפש קבצים בגוגל דרייב של המשתמש לפי שם.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "מילת חיפוש (חלק מהשם)"},
+                "max_results": {"type": "integer", "description": "כמה תוצאות להחזיר (ברירת מחדל 10)"},
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "create_google_doc",
+        "description": "יוצר מסמך Google Docs אמיתי בדרייב של המשתמש (לא קובץ מקומי).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "כותרת המסמך"},
+                "content": {"type": "string", "description": "תוכן טקסטואלי להכניס למסמך"},
+            },
+            "required": ["title"],
+        },
+    },
+    {
+        "name": "create_google_sheet",
+        "description": "יוצר גיליון Google Sheets אמיתי בדרייב של המשתמש (ה'Excel' של גוגל, לא קובץ מקומי).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "כותרת הגיליון"},
+                "headers": {
+                    "type": "array", "items": {"type": "string"},
+                    "description": "כותרות העמודות (שורה ראשונה)",
+                },
+                "rows": {
+                    "type": "array", "items": {"type": "array", "items": {}},
+                    "description": "רשימת שורות נתונים",
+                },
+            },
+            "required": ["title", "rows"],
+        },
+    },
+    {
+        "name": "create_google_slides",
+        "description": "יוצר מצגת Google Slides אמיתית בדרייב של המשתמש (לא קובץ מקומי).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "כותרת המצגת"},
+                "slides": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "title": {"type": "string", "description": "כותרת השקופית"},
+                            "content": {"type": "string", "description": "תוכן השקופית"},
+                        },
+                    },
+                    "description": "רשימת שקופיות",
+                },
+            },
+            "required": ["title", "slides"],
+        },
+    },
+    {
         "name": "create_word_doc",
         "description": "יוצר קובץ Word (.docx) עם כותרת ופסקאות טקסט.",
         "parameters": {
@@ -550,7 +732,12 @@ SYSTEM_INSTRUCTION = (
     "- list_recent_emails: קורא מיילים אמיתיים מהתיבה.\n"
     "- create_calendar_event, list_calendar_events: יוצרים/קוראים אירועים אמיתיים בלוח השנה "
     "של Google של המשתמש. כשמתבקש לקבוע/לתזכר משהו בתאריך ושעה, תקרא לכלי הזה ממש.\n"
-    "- create_word_doc, create_pptx, create_excel: יוצרים קבצים אמיתיים בדיסק שהמשתמש יכול להוריד.\n"
+    "- search_drive_files: מחפש קבצים אמיתיים בגוגל דרייב של המשתמש.\n"
+    "- create_google_doc, create_google_sheet, create_google_slides: יוצרים מסמך/גיליון/מצגת "
+    "אמיתיים בגוגל דרייב של המשתמש (לא קובץ מקומי). אם המשתמש מבקש Google Docs/Sheets/Slides "
+    "באופן מפורש, או 'Excel של גוגל', תשתמש בכלים האלה ולא בקבצים המקומיים.\n"
+    "- create_word_doc, create_pptx, create_excel: יוצרים קבצים מקומיים (.docx/.pptx/.xlsx) "
+    "בדיסק שהמשתמש יכול להוריד.\n"
     "- web_search: מחפש מידע עדכני באינטרנט באמת.\n"
     "- read_file, write_file, run_shell: גישה אמיתית למערכת הקבצים ולמסוף.\n"
     "לעולם אל תגיד שאינך מסוגל לבצע פעולה שיש לך כלי בשבילה - תמיד תקרא לכלי המתאים ותבצע "
