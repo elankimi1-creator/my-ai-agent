@@ -35,7 +35,7 @@ load_dotenv()
 GEMINI_MODEL = "gemini-2.5-flash"
 
 IAC_BASE_URL = "https://server.iac.ac.il/api/v1/studentapi"
-IAC_MAX_TOKENS = 10000
+IAC_MAX_TOKENS = 30000
 
 GOOGLE_SCOPES = [
     "https://www.googleapis.com/auth/gmail.modify",
@@ -833,10 +833,16 @@ def call_agent_iac(history: list) -> str:
         data = r.json()
         if "choices" not in data:
             raise RuntimeError(data.get("details") or data.get("error") or str(data))
-        message = data["choices"][0]["message"]
+        choice = data["choices"][0]
+        message = choice["message"]
         tool_calls = message.get("tool_calls")
         if not tool_calls:
-            return message.get("content") or str(data)
+            content = message.get("content")
+            if not content and choice.get("finish_reason") == "length":
+                raise RuntimeError(
+                    "השרת הגיע למגבלת הטוקנים בלי לסיים תשובה (כל התקציב הלך על חשיבה פנימית). נסה לשאול שאלה קצרה יותר."
+                )
+            return content or str(data)
         messages.append(message)
         for call in tool_calls:
             name = call["function"]["name"]
