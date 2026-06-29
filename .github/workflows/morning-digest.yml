@@ -1,0 +1,28 @@
+name: Morning Digest
+
+on:
+  schedule:
+    # 05:00 UTC = 08:00 Israel time (07:00 during DST) - runs daily
+    - cron: "0 5 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  send-digest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install google-genai google-api-python-client google-auth requests
+
+      - name: Run morning digest
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          IAC_TOKEN: ${{ secrets.IAC_TOKEN }}
+          GMAIL_TOKEN_JSON: ${{ secrets.GMAIL_TOKEN_JSON }}
+          DIGEST_TO_EMAIL: ${{ secrets.DIGEST_TO_EMAIL }}
+        run: python morning_digest.py
