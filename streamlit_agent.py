@@ -765,6 +765,19 @@ def generate_with_retry(client, **kwargs):
     raise RuntimeError("Gemini לא הגיב (עומס שרת חזק).")
 
 
+def transcribe_audio(audio_bytes: bytes, mime_type: str = "audio/wav") -> str:
+    client = get_gemini_client()
+    response = generate_with_retry(
+        client,
+        model=GEMINI_MODEL,
+        contents=[
+            types.Part.from_bytes(data=audio_bytes, mime_type=mime_type),
+            "תמלל את ההקלטה הזו לעברית (או לשפה שבה מדברים בה), החזר רק את התמלול בלי הערות נוספות.",
+        ],
+    )
+    return (response.text or "").strip()
+
+
 def call_agent_gemini(history: list) -> str:
     client = get_gemini_client()
     tool_config = types.Tool(function_declarations=[
@@ -933,10 +946,30 @@ for msg in st.session_state.chat_history:
 
 
 # ========================================================
+# הקלטת קול
+# ========================================================
+
+audio_value = st.audio_input("🎤 או הקלט הודעה קולית")
+
+voice_prompt = None
+if audio_value is not None:
+    audio_bytes = audio_value.getvalue()
+    audio_hash = hash(audio_bytes)
+    if st.session_state.get("last_audio_hash") != audio_hash:
+        st.session_state.last_audio_hash = audio_hash
+        with st.spinner("מתמלל את ההקלטה..."):
+            try:
+                voice_prompt = transcribe_audio(audio_bytes, audio_value.type or "audio/wav")
+            except Exception as e:
+                st.error(f"שגיאה בתמלול: {e}")
+
+
+# ========================================================
 # Chat input
 # ========================================================
 
-user_prompt = st.chat_input("כתוב הודעה...")
+typed_prompt = st.chat_input("כתוב הודעה...")
+user_prompt = typed_prompt or voice_prompt
 
 if user_prompt:
     full_prompt = user_prompt
