@@ -915,6 +915,10 @@ with st.sidebar:
                     f"הורד {p.name}", data=p.read_bytes(), file_name=p.name, key=f"dl_{fpath}"
                 )
 
+    st.divider()
+    st.subheader("🎤 הודעה קולית")
+    audio_value = st.audio_input("הקלט הודעה קולית")
+
 
 # ========================================================
 # Token check
@@ -946,10 +950,8 @@ for msg in st.session_state.chat_history:
 
 
 # ========================================================
-# הקלטת קול
+# עיבוד הקלטת קול (הכפתור עצמו נמצא בסיידבר)
 # ========================================================
-
-audio_value = st.audio_input("🎤 או הקלט הודעה קולית")
 
 voice_prompt = None
 if audio_value is not None:
