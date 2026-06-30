@@ -65,6 +65,9 @@ if "created_files" not in st.session_state:
 if "uploaded_paths" not in st.session_state:
     st.session_state.uploaded_paths = []
 
+if "pending_email" not in st.session_state:
+    st.session_state.pending_email = None
+
 UPLOADS_DIR = Path("uploads")
 UPLOADS_DIR.mkdir(exist_ok=True)
 
@@ -173,6 +176,16 @@ def tool_run_shell(command: str) -> str:
 
 
 def tool_send_email(to: str, subject: str, body: str, attachments: list = None) -> str:
+    st.session_state.pending_email = {
+        "to": to, "subject": subject, "body": body, "attachments": attachments or [],
+    }
+    return (
+        "המייל הוכן וממתין לאישור המשתמש בממשק (כפתורי אישור/ביטול). "
+        "אל תקרא שוב לכלי הזה - רק הודע למשתמש שהמייל מוכן וממתין לאישורו."
+    )
+
+
+def _do_send_email(to: str, subject: str, body: str, attachments: list = None) -> str:
     try:
         service = get_gmail_service()
 
@@ -939,6 +952,30 @@ for msg in st.session_state.chat_history:
 
 
 # ========================================================
+# אישור שליחת מייל
+# ========================================================
+
+if st.session_state.pending_email:
+    pe = st.session_state.pending_email
+    with st.chat_message("assistant"):
+        st.markdown("📧 **הסוכן רוצה לשלוח מייל:**")
+        st.markdown(f"**אל:** {pe['to']}\n\n**נושא:** {pe['subject']}\n\n**תוכן:**\n{pe['body']}")
+        if pe["attachments"]:
+            st.caption("📎 קבצים מצורפים: " + ", ".join(Path(p).name for p in pe["attachments"]))
+
+        col1, col2 = st.columns(2)
+        if col1.button("✅ אשר ושלח", key="confirm_email"):
+            result = _do_send_email(**pe)
+            st.session_state.pending_email = None
+            st.session_state.chat_history.append({"role": "assistant", "content": result})
+            st.rerun()
+        if col2.button("❌ בטל", key="cancel_email"):
+            st.session_state.pending_email = None
+            st.session_state.chat_history.append({"role": "assistant", "content": "המייל בוטל ולא נשלח."})
+            st.rerun()
+
+
+# ========================================================
 # Chat input
 # ========================================================
 
@@ -969,3 +1006,6 @@ if user_prompt:
             response_placeholder.error(assistant_reply)
 
     st.session_state.chat_history.append({"role": "assistant", "content": assistant_reply})
+
+    if st.session_state.pending_email:
+        st.rerun()
