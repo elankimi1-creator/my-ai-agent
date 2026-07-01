@@ -5,9 +5,12 @@
 """
 
 import base64
+import io
 import json
 import os
 import time
+import uuid
+from datetime import datetime
 from email import encoders
 from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
@@ -29,6 +32,7 @@ from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseUpload
 
 load_dotenv()
 
@@ -67,6 +71,12 @@ if "uploaded_paths" not in st.session_state:
 
 if "pending_email" not in st.session_state:
     st.session_state.pending_email = None
+
+if "conversations" not in st.session_state:
+    st.session_state.conversations = None  # None = טרם נטען מ-Drive
+
+if "active_conversation_id" not in st.session_state:
+    st.session_state.active_conversation_id = None
 
 UPLOADS_DIR = Path("uploads")
 UPLOADS_DIR.mkdir(exist_ok=True)
@@ -148,6 +158,107 @@ def get_sheets_service():
 
 def get_slides_service():
     return build("slides", "v1", credentials=get_google_creds())
+
+
+# ========================================================
+# שמירת היסטוריית שיחות ב-Google Drive
+# ========================================================
+
+CONV_FILE_NAME = "agent_conversations.json"
+
+
+def _drive_conv_file_id(service):
+    resp = service.files().list(
+        q=f"name='{CONV_FILE_NAME}' and trashed=false",
+        spaces="drive", fields="files(id)",
+    ).execute()
+    files = resp.get("files", [])
+    return files[0]["id"] if files else None
+
+
+def load_conversations_from_drive() -> list:
+    try:
+        service = get_drive_service()
+        fid = _drive_conv_file_id(service)
+        if not fid:
+            return []
+        content = service.files().get_media(fileId=fid).execute()
+        data = json.loads(content.decode("utf-8"))
+        return data.get("conversations", [])
+    except Exception:
+        return []
+
+
+def save_conversations_to_drive(conversations: list) -> bool:
+    try:
+        service = get_drive_service()
+        payload = json.dumps({"conversations": conversations}, ensure_ascii=False).encode("utf-8")
+        media = MediaIoBaseUpload(io.BytesIO(payload), mimetype="application/json")
+        fid = _drive_conv_file_id(service)
+        if fid:
+            service.files().update(fileId=fid, media_body=media).execute()
+        else:
+            service.files().create(
+                body={"name": CONV_FILE_NAME}, media_body=media, fields="id"
+            ).execute()
+        return True
+    except Exception as e:
+        st.toast(f"⚠️ שמירה ל-Drive נכשלה: {e}")
+        return False
+
+
+def _make_title(history: list) -> str:
+    for m in history:
+        if m["role"] == "user" and m.get("content"):
+            first_line = m["content"].strip().split("\n")[0]
+            return first_line[:40] or "שיחה חדשה"
+    return "שיחה חדשה"
+
+
+def start_new_conversation():
+    st.session_state.active_conversation_id = None
+    st.session_state.chat_history = []
+
+
+def select_conversation(cid: str):
+    conv = next((c for c in (st.session_state.conversations or []) if c["id"] == cid), None)
+    if conv:
+        st.session_state.active_conversation_id = cid
+        st.session_state.chat_history = conv["messages"]
+
+
+def persist_current_conversation():
+    if not st.session_state.chat_history:
+        return
+    convs = st.session_state.conversations
+    if convs is None:
+        convs = []
+        st.session_state.conversations = convs
+    cid = st.session_state.active_conversation_id
+    title = _make_title(st.session_state.chat_history)
+    now = datetime.now().isoformat()
+    if cid:
+        conv = next((c for c in convs if c["id"] == cid), None)
+        if conv:
+            conv["messages"] = st.session_state.chat_history
+            conv["title"] = title
+            conv["updated"] = now
+    else:
+        cid = uuid.uuid4().hex
+        convs.insert(0, {
+            "id": cid, "title": title,
+            "messages": st.session_state.chat_history, "updated": now,
+        })
+        st.session_state.active_conversation_id = cid
+    save_conversations_to_drive(convs)
+
+
+def delete_conversation(cid: str):
+    convs = st.session_state.conversations or []
+    st.session_state.conversations = [c for c in convs if c["id"] != cid]
+    if st.session_state.active_conversation_id == cid:
+        start_new_conversation()
+    save_conversations_to_drive(st.session_state.conversations)
 
 
 def tool_read_file(path: str) -> str:
@@ -884,11 +995,29 @@ def call_agent(history: list) -> str:
 with st.sidebar:
     st.header("הגדרות")
     st.caption("סוכן אחד עם כל הכלים: קבצים, Word/PowerPoint/Excel, Gmail, חיפוש אינטרנט")
-    if st.button("נקה שיחה"):
-        st.session_state.chat_history = []
-        st.session_state.created_files = []
-        st.session_state.uploaded_paths = []
+
+    st.divider()
+    st.subheader("💬 השיחות שלי")
+
+    # טעינה חד-פעמית של השיחות השמורות מ-Google Drive
+    if st.session_state.conversations is None and load_gemini_key():
+        with st.spinner("טוען שיחות מ-Google Drive..."):
+            st.session_state.conversations = load_conversations_from_drive()
+
+    if st.button("➕ שיחה חדשה", use_container_width=True):
+        start_new_conversation()
         st.rerun()
+
+    for conv in st.session_state.conversations or []:
+        is_active = conv["id"] == st.session_state.active_conversation_id
+        col_open, col_del = st.columns([5, 1])
+        label = ("🟢 " if is_active else "") + conv["title"]
+        if col_open.button(label, key=f"conv_{conv['id']}", use_container_width=True):
+            select_conversation(conv["id"])
+            st.rerun()
+        if col_del.button("🗑", key=f"del_{conv['id']}"):
+            delete_conversation(conv["id"])
+            st.rerun()
 
     st.divider()
     st.subheader("📎 צרף קובץ")
@@ -968,10 +1097,12 @@ if st.session_state.pending_email:
             result = _do_send_email(**pe)
             st.session_state.pending_email = None
             st.session_state.chat_history.append({"role": "assistant", "content": result})
+            persist_current_conversation()
             st.rerun()
         if col2.button("❌ בטל", key="cancel_email"):
             st.session_state.pending_email = None
             st.session_state.chat_history.append({"role": "assistant", "content": "המייל בוטל ולא נשלח."})
+            persist_current_conversation()
             st.rerun()
 
 
@@ -1007,5 +1138,6 @@ if user_prompt:
 
     st.session_state.chat_history.append({"role": "assistant", "content": assistant_reply})
 
-    if st.session_state.pending_email:
-        st.rerun()
+    persist_current_conversation()
+
+    st.rerun()
