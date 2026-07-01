@@ -2,8 +2,9 @@ name: Morning Digest
 
 on:
   schedule:
-    # 05:00 UTC = 08:00 Israel time (07:00 during DST) - runs daily
-    - cron: "0 5 * * *"
+    # 04:00 UTC = 07:00 Israel time (DST) - הקדמה כדי לפצות על עיכובי GitHub Actions
+    # כך שגם אם GitHub מאחר בשעה-שעתיים, הדוח מגיע בסביבות 08:00-09:00
+    - cron: "0 4 * * *"
   workflow_dispatch: {}
 
 jobs:
