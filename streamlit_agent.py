@@ -573,30 +573,57 @@ def tool_create_excel(path: str, sheet_name: str, headers: list, rows: list) -> 
 GOOGLE_SEARCH_URL = "https://www.googleapis.com/customsearch/v1"
 
 
-def tool_web_search(query: str) -> str:
+def _search_google(query: str) -> str:
     api_key = os.environ.get("GOOGLE_SEARCH_API_KEY")
     engine_id = os.environ.get("GOOGLE_SEARCH_ENGINE_ID")
     if not api_key or not engine_id:
-        return "אין גישה לחיפוש אינטרנט כרגע (חסר GOOGLE_SEARCH_API_KEY או GOOGLE_SEARCH_ENGINE_ID)."
+        raise RuntimeError("חסר GOOGLE_SEARCH_API_KEY או GOOGLE_SEARCH_ENGINE_ID")
+    params = {"key": api_key, "cx": engine_id, "q": query, "num": 5, "hl": "he"}
+    r = requests.get(GOOGLE_SEARCH_URL, params=params, timeout=30)
+    if r.status_code == 429:
+        raise RuntimeError("מגבלת חיפושים יומית של Google (100 ביום)")
+    r.raise_for_status()
+    items = r.json().get("items", [])
+    if not items:
+        return "לא נמצאו תוצאות."
+    return "\n\n".join(
+        f"• {it.get('title', '')}\n  {it.get('snippet', '')}\n  {it.get('link', '')}"
+        for it in items
+    )
+
+
+def _search_duckduckgo(query: str) -> str:
+    # גיבוי חינמי בלי מפתח - DuckDuckGo HTML
+    r = requests.get(
+        "https://html.duckduckgo.com/html/",
+        params={"q": query},
+        headers={"User-Agent": "Mozilla/5.0"},
+        timeout=30,
+    )
+    r.raise_for_status()
+    import re
+    from html import unescape
+    results = []
+    blocks = re.findall(
+        r'<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>(.*?)</a>.*?'
+        r'<a[^>]*class="result__snippet"[^>]*>(.*?)</a>',
+        r.text, re.DOTALL,
+    )
+    for link, title, snippet in blocks[:5]:
+        clean = lambda s: unescape(re.sub(r"<[^>]+>", "", s)).strip()
+        results.append(f"• {clean(title)}\n  {clean(snippet)}\n  {link}")
+    return "\n\n".join(results) if results else "לא נמצאו תוצאות."
+
+
+def tool_web_search(query: str) -> str:
     try:
-        params = {"key": api_key, "cx": engine_id, "q": query, "num": 5, "hl": "he"}
-        r = requests.get(GOOGLE_SEARCH_URL, params=params, timeout=30)
-        if r.status_code == 429:
-            return "הגעת למגבלת החיפושים היומית של Google (100 ביום). נסה שוב מחר."
-        r.raise_for_status()
-        data = r.json()
-        items = data.get("items", [])
-        if not items:
-            return "לא נמצאו תוצאות."
-        results = []
-        for it in items:
-            title = it.get("title", "")
-            snippet = it.get("snippet", "")
-            link = it.get("link", "")
-            results.append(f"• {title}\n  {snippet}\n  {link}")
-        return "\n\n".join(results)
-    except Exception as e:
-        return f"שגיאה בחיפוש אינטרנט: {e}"
+        return _search_google(query)
+    except Exception:
+        try:
+            st.toast("🦆 Google לא זמין - מחפש דרך DuckDuckGo")
+            return _search_duckduckgo(query)
+        except Exception as e:
+            return f"שגיאה בחיפוש אינטרנט: {e}"
 
 
 def call_tool(name: str, args: dict) -> str:
