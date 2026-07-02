@@ -567,36 +567,34 @@ def tool_create_excel(path: str, sheet_name: str, headers: list, rows: list) -> 
 
 
 # ========================================================
-# כלי: חיפוש אינטרנט (דרך ה-Agent של IAC ברקע)
+# כלי: חיפוש אינטרנט (Google Custom Search - חינמי, עצמאי)
 # ========================================================
 
+GOOGLE_SEARCH_URL = "https://www.googleapis.com/customsearch/v1"
+
+
 def tool_web_search(query: str) -> str:
-    token = load_iac_token()
-    if not token:
-        return "אין גישה לחיפוש אינטרנט כרגע (אין טוקן גיבוי)."
+    api_key = os.environ.get("GOOGLE_SEARCH_API_KEY")
+    engine_id = os.environ.get("GOOGLE_SEARCH_ENGINE_ID")
+    if not api_key or not engine_id:
+        return "אין גישה לחיפוש אינטרנט כרגע (חסר GOOGLE_SEARCH_API_KEY או GOOGLE_SEARCH_ENGINE_ID)."
     try:
-        headers = {"Authorization": f"Bearer {token}"}
-        payload = {
-            "input": query,
-            "instructions": "Search the web and answer concisely in Hebrew.",
-            "tools": [{"type": "web_search"}],
-            "reasoning": {"effort": "low"},
-            "max_output_tokens": IAC_MAX_TOKENS,
-        }
-        r = requests.post(f"{IAC_BASE_URL}/responses", headers=headers, json=payload, timeout=90)
+        params = {"key": api_key, "cx": engine_id, "q": query, "num": 5, "hl": "he"}
+        r = requests.get(GOOGLE_SEARCH_URL, params=params, timeout=30)
+        if r.status_code == 429:
+            return "הגעת למגבלת החיפושים היומית של Google (100 ביום). נסה שוב מחר."
         r.raise_for_status()
         data = r.json()
-        if data.get("output_text"):
-            return data["output_text"]
-        texts = []
-        for item in data.get("output", []):
-            if not isinstance(item, dict) or item.get("type") == "reasoning":
-                continue
-            for part in item.get("content") or []:
-                text = part.get("text") or part.get("output_text")
-                if text:
-                    texts.append(text)
-        return "\n".join(texts) if texts else "לא נמצאו תוצאות."
+        items = data.get("items", [])
+        if not items:
+            return "לא נמצאו תוצאות."
+        results = []
+        for it in items:
+            title = it.get("title", "")
+            snippet = it.get("snippet", "")
+            link = it.get("link", "")
+            results.append(f"• {title}\n  {snippet}\n  {link}")
+        return "\n\n".join(results)
     except Exception as e:
         return f"שגיאה בחיפוש אינטרנט: {e}"
 
