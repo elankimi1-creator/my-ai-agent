@@ -86,8 +86,19 @@ UPLOADS_DIR.mkdir(exist_ok=True)
 # טוקנים
 # ========================================================
 
+def load_gemini_keys() -> list:
+    """מחזיר את כל מפתחות ה-Gemini הזמינים (עד 3), לפי הסדר, בלי כפילויות."""
+    keys = []
+    for name in ("GEMINI_API_KEY", "GEMINI_API_KEY_2", "GEMINI_API_KEY_3"):
+        val = os.environ.get(name)
+        if val and val not in keys:
+            keys.append(val)
+    return keys
+
+
 def load_gemini_key() -> str:
-    return os.environ.get("GEMINI_API_KEY")
+    keys = load_gemini_keys()
+    return keys[0] if keys else None
 
 
 def load_iac_token() -> str:
@@ -873,8 +884,8 @@ SYSTEM_INSTRUCTION = (
 # Gemini
 # ========================================================
 
-def get_gemini_client():
-    api_key = load_gemini_key()
+def get_gemini_client(api_key: str = None):
+    api_key = api_key or load_gemini_key()
     if not api_key:
         raise RuntimeError("לא נמצא GEMINI_API_KEY בקובץ .env")
     return genai.Client(api_key=api_key)
@@ -889,8 +900,8 @@ def generate_with_retry(client, **kwargs):
     raise RuntimeError("Gemini לא הגיב (עומס שרת חזק).")
 
 
-def call_agent_gemini(history: list) -> str:
-    client = get_gemini_client()
+def call_agent_gemini(history: list, api_key: str = None) -> str:
+    client = get_gemini_client(api_key)
     tool_config = types.Tool(function_declarations=[
         types.FunctionDeclaration(name=t["name"], description=t["description"], parameters=t["parameters"])
         for t in TOOLS_SCHEMA
@@ -979,13 +990,25 @@ def call_agent_iac(history: list) -> str:
 
 
 def call_agent(history: list) -> str:
-    try:
-        return call_agent_gemini(history)
-    except Exception as e:
-        if is_gemini_quota_error(e) and load_iac_token():
-            st.toast("⚠️ מכסת Gemini הסתיימה - עובר לגיבוי")
-            return call_agent_iac(history)
-        raise
+    keys = load_gemini_keys()
+    # מנסה כל מפתח Gemini בתורו; אם אחד מיצה את המכסה - עובר לבא
+    for i, key in enumerate(keys):
+        try:
+            return call_agent_gemini(history, api_key=key)
+        except Exception as e:
+            if is_gemini_quota_error(e):
+                if i < len(keys) - 1:
+                    st.toast(f"⚠️ מפתח Gemini {i + 1} מיצה מכסה - עובר למפתח {i + 2}")
+                    continue
+                # כל מפתחות Gemini מוצו - יורדים ל-IAC
+                if load_iac_token():
+                    st.toast("⚠️ כל מפתחות Gemini מוצו - עובר לגיבוי IAC")
+                    return call_agent_iac(history)
+            raise
+    # אין אף מפתח Gemini - מנסים IAC ישירות
+    if load_iac_token():
+        return call_agent_iac(history)
+    raise RuntimeError("לא נמצא אף מפתח Gemini ואין טוקן IAC לגיבוי.")
 
 
 # ========================================================
