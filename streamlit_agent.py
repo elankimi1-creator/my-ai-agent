@@ -48,7 +48,9 @@ GEMINI_MODEL = "gemini-2.5-flash"
 # ========================================================
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 GROQ_MODEL = "llama-3.3-70b-versatile"
-GROQ_MAX_TOKENS = 8000
+GROQ_MAX_TOKENS = 2000
+# הגרסה החינמית של Groq מגבילה את גודל הבקשה - נשלח רק את ההודעות האחרונות
+GROQ_HISTORY_LIMIT = 8
 
 GOOGLE_SCOPES = [
     "https://www.googleapis.com/auth/gmail.modify",
@@ -943,8 +945,10 @@ def call_agent_groq(history: list) -> str:
     if not key:
         raise RuntimeError("אין מפתח Groq לגיבוי. הוסף GROQ_API_KEY לקובץ .env (מפתח חינמי מ-console.groq.com).")
     headers = {"Authorization": f"Bearer {key}"}
+    # שולחים רק את ההודעות האחרונות כדי לא לחרוג ממגבלת הגודל של Groq (413)
+    recent = [m for m in history if m.get("content")][-GROQ_HISTORY_LIMIT:]
     messages = [{"role": "system", "content": SYSTEM_INSTRUCTION}] + [
-        {"role": m["role"], "content": m["content"]} for m in history if m.get("content")
+        {"role": m["role"], "content": m["content"]} for m in recent
     ]
 
     for _ in range(MAX_TOOL_ROUNDS):
