@@ -1,12 +1,7 @@
 """
-סוכן AI אחד (Agent) עם ממשק Streamlit — גרסה חינמית לחלוטין.
-מבוסס Google Gemini (ה-API האישי שלך, ה-free tier), עם גיבוי חינמי דרך Groq
-(במקום ה-API של המכללה/IAC), וחיפוש אינטרנט חינמי דרך DuckDuckGo (בלי מפתח כלל).
-
-כולל: קבצים, shell, Gmail, יומן Google, Drive/Docs/Sheets/Slides,
-חיפוש אינטרנט, ויצירת קבצי Word/PowerPoint/Excel.
-
-כשהמכסה היומית של Gemini מתרוקנת, הסוכן עובר אוטומטית לגיבוי - Groq (חינמי).
+סוכן AI אחד (Agent) עם ממשק Streamlit, מבוסס Google Gemini (ה-API האישי שלך, לא תלוי במכללה).
+כולל: קבצים, shell, Gmail, חיפוש אינטרנט, ויצירת קבצי Word/PowerPoint.
+כשהמכסה היומית של Gemini מתרוקנת, הסוכן עובר אוטומטית לגיבוי - ה-API של המכללה (IAC).
 """
 
 import base64
@@ -43,14 +38,8 @@ load_dotenv()
 
 GEMINI_MODEL = "gemini-2.5-flash"
 
-# ========================================================
-# Groq — גיבוי חינמי (תואם OpenAI). מפתח חינמי מ-console.groq.com
-# ========================================================
-GROQ_BASE_URL = "https://api.groq.com/openai/v1"
-GROQ_MODEL = "llama-3.3-70b-versatile"
-GROQ_MAX_TOKENS = 2000
-# הגרסה החינמית של Groq מגבילה את גודל הבקשה - נשלח רק את ההודעות האחרונות
-GROQ_HISTORY_LIMIT = 8
+IAC_BASE_URL = "https://server.iac.ac.il/api/v1/studentapi"
+IAC_MAX_TOKENS = 30000
 
 GOOGLE_SCOPES = [
     "https://www.googleapis.com/auth/gmail.modify",
@@ -69,7 +58,7 @@ TOKEN_FILE = "gmail_token.json"
 
 st.set_page_config(page_title="הסוכן שלי", page_icon="🤖", layout="centered")
 st.title("🤖 הסוכן שלי")
-st.caption("סוכן אחד עם כלים: קבצים, Word/PowerPoint, Gmail וחיפוש אינטרנט — 100% חינמי")
+st.caption("סוכן אחד עם כלים: קבצים, Word/PowerPoint, Gmail וחיפוש אינטרנט")
 
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
@@ -101,26 +90,19 @@ def load_gemini_key() -> str:
     return os.environ.get("GEMINI_API_KEY")
 
 
-def _read_env_value(key: str) -> str:
-    """קורא ערך מקובץ .env ידנית (למקרה שלא נטען לסביבה)."""
+def load_iac_token() -> str:
+    val = os.environ.get("IAC_TOKEN")
+    if val and val != "sk-std-YOUR-KEY":
+        return val
+
     env_path = Path(".env")
     if not env_path.exists():
         return None
-    prefix = f"{key}="
     for line in env_path.read_text(encoding="utf-8").splitlines():
-        if line.startswith(prefix):
+        if line.startswith("IAC_TOKEN="):
             val = line.split("=", 1)[1].strip().strip("'\"")
-            return val or None
-    return None
-
-
-def load_groq_key() -> str:
-    val = os.environ.get("GROQ_API_KEY")
-    if val and val != "gsk-YOUR-KEY":
-        return val
-    val = _read_env_value("GROQ_API_KEY")
-    if val and val != "gsk-YOUR-KEY":
-        return val
+            if val and val != "sk-std-YOUR-KEY":
+                return val
     return None
 
 
@@ -574,26 +556,36 @@ def tool_create_excel(path: str, sheet_name: str, headers: list, rows: list) -> 
 
 
 # ========================================================
-# כלי: חיפוש אינטרנט חינמי (DuckDuckGo — בלי מפתח)
+# כלי: חיפוש אינטרנט (דרך ה-Agent של IAC ברקע)
 # ========================================================
 
 def tool_web_search(query: str) -> str:
+    token = load_iac_token()
+    if not token:
+        return "אין גישה לחיפוש אינטרנט כרגע (אין טוקן גיבוי)."
     try:
-        from ddgs import DDGS
-    except ImportError:
-        return "חבילת החיפוש חסרה. התקן: pip install ddgs"
-    try:
-        with DDGS() as ddgs:
-            results = list(ddgs.text(query, max_results=6))
-        if not results:
-            return "לא נמצאו תוצאות."
-        lines = []
-        for r in results:
-            title = r.get("title", "")
-            body = r.get("body", "")
-            href = r.get("href", "")
-            lines.append(f"• {title}\n  {body}\n  מקור: {href}")
-        return "\n\n".join(lines)
+        headers = {"Authorization": f"Bearer {token}"}
+        payload = {
+            "input": query,
+            "instructions": "Search the web and answer concisely in Hebrew.",
+            "tools": [{"type": "web_search"}],
+            "reasoning": {"effort": "low"},
+            "max_output_tokens": IAC_MAX_TOKENS,
+        }
+        r = requests.post(f"{IAC_BASE_URL}/responses", headers=headers, json=payload, timeout=90)
+        r.raise_for_status()
+        data = r.json()
+        if data.get("output_text"):
+            return data["output_text"]
+        texts = []
+        for item in data.get("output", []):
+            if not isinstance(item, dict) or item.get("type") == "reasoning":
+                continue
+            for part in item.get("content") or []:
+                text = part.get("text") or part.get("output_text")
+                if text:
+                    texts.append(text)
+        return "\n".join(texts) if texts else "לא נמצאו תוצאות."
     except Exception as e:
         return f"שגיאה בחיפוש אינטרנט: {e}"
 
@@ -878,7 +870,7 @@ SYSTEM_INSTRUCTION = (
 
 
 # ========================================================
-# Gemini — מנוע ראשי
+# Gemini
 # ========================================================
 
 def get_gemini_client():
@@ -933,56 +925,38 @@ def call_agent_gemini(history: list) -> str:
 
 
 # ========================================================
-# Groq — גיבוי חינמי (תואם OpenAI chat/completions)
+# IAC (גיבוי)
 # ========================================================
 
-def _groq_tools_schema() -> list:
+def _iac_tools_schema() -> list:
     return [{"type": "function", "function": t} for t in TOOLS_SCHEMA]
 
 
-def call_agent_groq(history: list) -> str:
-    key = load_groq_key()
-    if not key:
-        raise RuntimeError("אין מפתח Groq לגיבוי. הוסף GROQ_API_KEY לקובץ .env (מפתח חינמי מ-console.groq.com).")
-    headers = {"Authorization": f"Bearer {key}"}
-    # שולחים רק את ההודעות האחרונות כדי לא לחרוג ממגבלת הגודל של Groq (413)
-    recent = [m for m in history if m.get("content")][-GROQ_HISTORY_LIMIT:]
+def call_agent_iac(history: list) -> str:
+    token = load_iac_token()
+    if not token:
+        raise RuntimeError("אין גם טוקן IAC לגיבוי.")
+    headers = {"Authorization": f"Bearer {token}"}
     messages = [{"role": "system", "content": SYSTEM_INSTRUCTION}] + [
-        {"role": m["role"], "content": m["content"]} for m in recent
+        {"role": m["role"], "content": m["content"]} for m in history if m.get("content")
     ]
 
     for _ in range(MAX_TOOL_ROUNDS):
-        payload = {
-            "model": GROQ_MODEL,
-            "messages": messages,
-            "tools": _groq_tools_schema(),
-            "max_tokens": GROQ_MAX_TOKENS,
-        }
+        payload = {"messages": messages, "tools": _iac_tools_schema(), "max_completion_tokens": IAC_MAX_TOKENS}
 
-        for attempt in range(4):
+        for attempt in range(3):
             try:
-                r = requests.post(
-                    f"{GROQ_BASE_URL}/chat/completions", headers=headers, json=payload, timeout=120
-                )
-                if r.status_code == 429:
-                    if attempt == 3:
-                        raise RuntimeError(
-                            "Groq עמוס כרגע (חריגה ממגבלת הקצב החינמית). נסה שוב בעוד דקה."
-                        )
-                    wait = float(r.headers.get("retry-after", 0)) or (5 * (attempt + 1))
-                    st.toast(f"⏳ Groq עמוס - ממתין {int(wait)} שניות ומנסה שוב")
-                    time.sleep(wait)
-                    continue
+                r = requests.post(f"{IAC_BASE_URL}/chat/completions", headers=headers, json=payload, timeout=120)
                 break
             except requests.exceptions.ReadTimeout:
-                if attempt == 3:
-                    raise RuntimeError("שרת Groq לא הגיב בזמן (timeout חזרתי). נסה שוב בעוד דקה.")
+                if attempt == 2:
+                    raise RuntimeError("השרת של המכללה לא הגיב בזמן (timeout חזרתי). נסה שוב בעוד דקה.")
                 time.sleep(3)
 
         r.raise_for_status()
         data = r.json()
         if "choices" not in data:
-            raise RuntimeError(data.get("error") or str(data))
+            raise RuntimeError(data.get("details") or data.get("error") or str(data))
         choice = data["choices"][0]
         message = choice["message"]
         tool_calls = message.get("tool_calls")
@@ -990,14 +964,14 @@ def call_agent_groq(history: list) -> str:
             content = message.get("content")
             if not content and choice.get("finish_reason") == "length":
                 raise RuntimeError(
-                    "השרת הגיע למגבלת הטוקנים בלי לסיים תשובה. נסה לשאול שאלה קצרה יותר."
+                    "השרת הגיע למגבלת הטוקנים בלי לסיים תשובה (כל התקציב הלך על חשיבה פנימית). נסה לשאול שאלה קצרה יותר."
                 )
             return content or str(data)
         messages.append(message)
         for call in tool_calls:
             name = call["function"]["name"]
             args = json.loads(call["function"]["arguments"] or "{}")
-            st.toast(f"🔧 קורא לכלי (גיבוי Groq): {name}")
+            st.toast(f"🔧 קורא לכלי (גיבוי): {name}")
             result = call_tool(name, args)
             messages.append({"role": "tool", "tool_call_id": call["id"], "content": result})
 
@@ -1008,9 +982,9 @@ def call_agent(history: list) -> str:
     try:
         return call_agent_gemini(history)
     except Exception as e:
-        if is_gemini_quota_error(e) and load_groq_key():
-            st.toast("⚠️ מכסת Gemini הסתיימה - עובר לגיבוי Groq")
-            return call_agent_groq(history)
+        if is_gemini_quota_error(e) and load_iac_token():
+            st.toast("⚠️ מכסת Gemini הסתיימה - עובר לגיבוי")
+            return call_agent_iac(history)
         raise
 
 
@@ -1020,11 +994,7 @@ def call_agent(history: list) -> str:
 
 with st.sidebar:
     st.header("הגדרות")
-    st.caption("סוכן אחד עם כל הכלים: קבצים, Word/PowerPoint/Excel, Gmail, חיפוש אינטרנט — חינמי")
-
-    engine_bits = ["Gemini (ראשי)"]
-    engine_bits.append("Groq (גיבוי) ✅" if load_groq_key() else "Groq (גיבוי) — חסר מפתח")
-    st.caption("מנועים: " + " · ".join(engine_bits))
+    st.caption("סוכן אחד עם כל הכלים: קבצים, Word/PowerPoint/Excel, Gmail, חיפוש אינטרנט")
 
     st.divider()
     st.subheader("💬 השיחות שלי")
