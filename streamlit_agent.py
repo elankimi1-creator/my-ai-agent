@@ -959,14 +959,23 @@ def call_agent_groq(history: list) -> str:
             "max_tokens": GROQ_MAX_TOKENS,
         }
 
-        for attempt in range(3):
+        for attempt in range(4):
             try:
                 r = requests.post(
                     f"{GROQ_BASE_URL}/chat/completions", headers=headers, json=payload, timeout=120
                 )
+                if r.status_code == 429:
+                    if attempt == 3:
+                        raise RuntimeError(
+                            "Groq עמוס כרגע (חריגה ממגבלת הקצב החינמית). נסה שוב בעוד דקה."
+                        )
+                    wait = float(r.headers.get("retry-after", 0)) or (5 * (attempt + 1))
+                    st.toast(f"⏳ Groq עמוס - ממתין {int(wait)} שניות ומנסה שוב")
+                    time.sleep(wait)
+                    continue
                 break
             except requests.exceptions.ReadTimeout:
-                if attempt == 2:
+                if attempt == 3:
                     raise RuntimeError("שרת Groq לא הגיב בזמן (timeout חזרתי). נסה שוב בעוד דקה.")
                 time.sleep(3)
 
