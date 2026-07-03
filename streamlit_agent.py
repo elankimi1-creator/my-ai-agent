@@ -57,6 +57,41 @@ TOKEN_FILE = "gmail_token.json"
 # ========================================================
 
 st.set_page_config(page_title="הסוכן שלי", page_icon="🤖", layout="centered")
+
+# עיצוב מותאם לבועות הצ'אט (מבוסס data-testid יציב של Streamlit)
+st.markdown("""
+<style>
+/* בועת המשתמש - כחול gradient, מיושרת לימין */
+.stChatMessage:has([data-testid="stChatMessageAvatarUser"]) {
+    flex-direction: row-reverse;
+    text-align: right;
+}
+.stChatMessage:has([data-testid="stChatMessageAvatarUser"]) [data-testid="stChatMessageContent"] {
+    background: linear-gradient(135deg, #2563eb, #3b82f6);
+    color: #ffffff;
+    border-radius: 20px 20px 6px 20px;
+    padding: 12px 16px;
+    box-shadow: 0 4px 14px rgba(37, 99, 235, 0.25);
+}
+.stChatMessage:has([data-testid="stChatMessageAvatarUser"]) [data-testid="stChatMessageContent"] * {
+    color: #ffffff !important;
+}
+/* בועת הסוכן - אפור בהיר, מיושרת לשמאל */
+.stChatMessage:has([data-testid="stChatMessageAvatarAssistant"]) [data-testid="stChatMessageContent"] {
+    background: #d8e0ea;
+    color: #1e293b;
+    border-radius: 20px 20px 20px 6px;
+    padding: 12px 16px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+}
+/* אווטרים עגולים ומודגשים */
+.stChatMessage [data-testid="stChatMessageAvatarUser"],
+.stChatMessage [data-testid="stChatMessageAvatarAssistant"] {
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.12);
+}
+</style>
+""", unsafe_allow_html=True)
+
 st.title("🤖 הסוכן שלי")
 st.caption("סוכן אחד עם כלים: קבצים, Word/PowerPoint, Gmail וחיפוש אינטרנט")
 
