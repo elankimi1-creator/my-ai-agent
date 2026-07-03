@@ -272,6 +272,46 @@ def delete_conversation(cid: str):
     save_conversations_to_drive(st.session_state.conversations)
 
 
+# ========================================================
+# מעקב שימוש יומי: חיפושים וטוקנים
+# ========================================================
+
+USAGE_FILE = Path("usage_stats.json")
+
+
+def _load_usage() -> dict:
+    today = datetime.now().strftime("%Y-%m-%d")
+    try:
+        data = json.loads(USAGE_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        data = {}
+    if data.get("date") != today:
+        data = {"date": today, "searches": 0, "tokens": 0, "requests": 0}
+    return data
+
+
+def _save_usage(data: dict):
+    try:
+        USAGE_FILE.write_text(json.dumps(data), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def track_search():
+    data = _load_usage()
+    data["searches"] = data.get("searches", 0) + 1
+    _save_usage(data)
+
+
+def track_tokens(count: int):
+    if not count:
+        return
+    data = _load_usage()
+    data["tokens"] = data.get("tokens", 0) + count
+    data["requests"] = data.get("requests", 0) + 1
+    _save_usage(data)
+
+
 def tool_read_file(path: str) -> str:
     try:
         return Path(path).read_text(encoding="utf-8")
@@ -616,6 +656,7 @@ def _search_duckduckgo(query: str) -> str:
 
 
 def tool_web_search(query: str) -> str:
+    track_search()
     try:
         return _search_google(query)
     except Exception:
@@ -946,6 +987,10 @@ def call_agent_gemini(history: list, api_key: str = None) -> str:
         candidate = response.candidates[0]
         contents.append(candidate.content)
 
+        usage = getattr(response, "usage_metadata", None)
+        if usage:
+            track_tokens(getattr(usage, "total_token_count", 0) or 0)
+
         function_calls = [p.function_call for p in candidate.content.parts if p.function_call]
         if not function_calls:
             return "".join(p.text for p in candidate.content.parts if p.text)
@@ -1043,6 +1088,14 @@ def call_agent(history: list) -> str:
 with st.sidebar:
     st.header("הגדרות")
     st.caption("סוכן אחד עם כל הכלים: קבצים, Word/PowerPoint/Excel, Gmail, חיפוש אינטרנט")
+
+    st.divider()
+    st.subheader("📊 שימוש היום")
+    usage = _load_usage()
+    col_a, col_b = st.columns(2)
+    col_a.metric("🔍 חיפושים", f"{usage.get('searches', 0)} / 100")
+    col_b.metric("🧠 טוקנים", f"{usage.get('tokens', 0):,}")
+    st.caption(f"בקשות ל-Gemini היום: {usage.get('requests', 0)} | מתאפס כל יום")
 
     st.divider()
     st.subheader("💬 השיחות שלי")

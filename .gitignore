@@ -8,3 +8,4 @@ __pycache__/
 uploads/
 .idea/
 .claude/
+usage_stats.json
