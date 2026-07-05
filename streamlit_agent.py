@@ -977,13 +977,27 @@ SYSTEM_INSTRUCTION = (
     "- web_search: מחפש מידע עדכני באינטרנט באמת.\n"
     "- read_file, write_file, run_shell: גישה אמיתית למערכת הקבצים ולמסוף.\n"
     "לעולם אל תגיד שאינך מסוגל לבצע פעולה שיש לך כלי בשבילה - תמיד תקרא לכלי המתאים ותבצע "
-    "את הבקשה בפועל."
+    "את הבקשה בפועל.\n"
+    "חשוב מאוד: ענה תמיד באותה שפה שבה המשתמש פנה אליך בהודעה. אם כתב בעברית - ענה בעברית; "
+    "אם כתב באנגלית - ענה באנגלית; וכן הלאה לכל שפה.\n"
+    "אל תציג למשתמש את החשיבה הפנימית שלך. לעולם אל תכתוב 'THOUGHT:' או מחשבות/הסברים על "
+    "מה שאתה עומד לעשות - החזר אך ורק את התשובה הסופית והנקייה למשתמש."
 )
 
 
 # ========================================================
 # Gemini
 # ========================================================
+
+def _strip_thoughts(text: str) -> str:
+    """מסיר חשיבה פנימית שדולפת (למשל 'THOUGHT: ...') ומשאיר רק את התשובה הנקייה."""
+    if not text:
+        return text
+    import re
+    # מסיר בלוק THOUGHT/THINKING בתחילת הטקסט עד לתשובה בפועל
+    cleaned = re.sub(r'(?is)^\s*(THOUGHT|THINKING|מחשבה)\s*:.*?(?=\n|[א-ת])', '', text, count=1)
+    return cleaned.strip() or text.strip()
+
 
 def get_gemini_client(api_key: str = None):
     api_key = api_key or load_gemini_key()
@@ -1028,7 +1042,7 @@ def call_agent_gemini(history: list, api_key: str = None) -> str:
 
         function_calls = [p.function_call for p in candidate.content.parts if p.function_call]
         if not function_calls:
-            return "".join(p.text for p in candidate.content.parts if p.text)
+            return _strip_thoughts("".join(p.text for p in candidate.content.parts if p.text))
 
         response_parts = []
         for call in function_calls:
@@ -1082,7 +1096,7 @@ def call_agent_iac(history: list) -> str:
                 raise RuntimeError(
                     "השרת הגיע למגבלת הטוקנים בלי לסיים תשובה (כל התקציב הלך על חשיבה פנימית). נסה לשאול שאלה קצרה יותר."
                 )
-            return content or str(data)
+            return _strip_thoughts(content) if content else str(data)
         messages.append(message)
         for call in tool_calls:
             name = call["function"]["name"]
