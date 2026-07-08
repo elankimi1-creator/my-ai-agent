@@ -990,12 +990,23 @@ SYSTEM_INSTRUCTION = (
 # ========================================================
 
 def _strip_thoughts(text: str) -> str:
-    """מסיר חשיבה פנימית שדולפת (למשל 'THOUGHT: ...') ומשאיר רק את התשובה הנקייה."""
+    """מסיר חשיבה פנימית שדולפת (THOUGHT או פסקת מחשבה באנגלית) ומשאיר רק את התשובה הנקייה."""
     if not text:
         return text
     import re
-    # מסיר בלוק THOUGHT/THINKING בתחילת הטקסט עד לתשובה בפועל
+    # 1) מסיר בלוק THOUGHT/THINKING מפורש בתחילת הטקסט
     cleaned = re.sub(r'(?is)^\s*(THOUGHT|THINKING|מחשבה)\s*:.*?(?=\n|[א-ת])', '', text, count=1)
+
+    # 2) רשת ביטחון: אם יש פסקת "חשיבה" באנגלית לפני התשובה בעברית -
+    #    (מזוהה לפי ניסוחי מטא כמו "The user", "I should", "This is") - חותכים עד לעברית הראשונה
+    thought_markers = ("the user", "i should", "i will", "this is great",
+                       "this implies", "i need to", "let me", "i can")
+    head = cleaned[:400].lower()
+    if any(m in head for m in thought_markers):
+        heb = re.search(r'[א-ת]', cleaned)
+        if heb and heb.start() > 0:
+            cleaned = cleaned[heb.start():]
+
     return cleaned.strip() or text.strip()
 
 
@@ -1042,7 +1053,12 @@ def call_agent_gemini(history: list, api_key: str = None) -> str:
 
         function_calls = [p.function_call for p in candidate.content.parts if p.function_call]
         if not function_calls:
-            return _strip_thoughts("".join(p.text for p in candidate.content.parts if p.text))
+            # מסננים החוצה חלקי "חשיבה" (thought) שהמודל מחזיר, ומשאירים רק את התשובה
+            answer = "".join(
+                p.text for p in candidate.content.parts
+                if p.text and not getattr(p, "thought", False)
+            )
+            return _strip_thoughts(answer)
 
         response_parts = []
         for call in function_calls:
