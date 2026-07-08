@@ -124,7 +124,8 @@ UPLOADS_DIR.mkdir(exist_ok=True)
 def load_gemini_keys() -> list:
     """מחזיר את כל מפתחות ה-Gemini הזמינים (עד 3), לפי הסדר, בלי כפילויות."""
     keys = []
-    for name in ("GEMINI_API_KEY", "GEMINI_API_KEY_2", "GEMINI_API_KEY_3"):
+    for name in ("GEMINI_API_KEY", "GEMINI_API_KEY_2", "GEMINI_API_KEY_3",
+                 "GEMINI_API_KEY_4", "GEMINI_API_KEY_5"):
         val = os.environ.get(name)
         if val and val not in keys:
             keys.append(val)
