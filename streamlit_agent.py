@@ -23,7 +23,7 @@ from dotenv import load_dotenv
 from docx import Document
 from pptx import Presentation
 from pptx.util import Inches
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from google import genai
 from google.genai import errors as genai_errors
 from google.genai import types
@@ -1048,23 +1048,61 @@ def _to_supported_image(p: Path, mime: str):
         return p.read_bytes(), mime
 
 
+def _extract_office_text(p: Path) -> str:
+    """מחלץ טקסט מקבצי Office (Word/PowerPoint/Excel) כי Gemini לא קורא אותם ישירות."""
+    ext = p.suffix.lower()
+    try:
+        if ext == ".docx":
+            doc = Document(str(p))
+            return "\n".join(par.text for par in doc.paragraphs if par.text.strip())
+        if ext == ".pptx":
+            prs = Presentation(str(p))
+            lines = []
+            for i, slide in enumerate(prs.slides, 1):
+                lines.append(f"--- שקופית {i} ---")
+                for shape in slide.shapes:
+                    if shape.has_text_frame and shape.text_frame.text.strip():
+                        lines.append(shape.text_frame.text)
+            return "\n".join(lines)
+        if ext == ".xlsx":
+            wb = load_workbook(str(p), read_only=True, data_only=True)
+            lines = []
+            for ws in wb.worksheets:
+                lines.append(f"--- גיליון {ws.title} ---")
+                for row in ws.iter_rows(values_only=True):
+                    cells = [str(c) for c in row if c is not None]
+                    if cells:
+                        lines.append(" | ".join(cells))
+            return "\n".join(lines)
+    except Exception as e:
+        return f"(לא הצלחתי לחלץ טקסט מהקובץ {p.name}: {e})"
+    return ""
+
+
 def _build_media_parts(client, paths: list) -> list:
-    """יוצר חלקי מדיה (תמונה/סרטון/PDF) כדי ש-Gemini יוכל לראות ולנתח את התוכן."""
+    """יוצר חלקי מדיה (תמונה/סרטון/PDF/Office) כדי ש-Gemini יוכל לראות ולנתח את התוכן."""
     import mimetypes
+    office_exts = {".docx", ".pptx", ".xlsx"}
     parts = []
     for path_str in paths or []:
         p = Path(path_str)
         if not p.exists():
             continue
+        ext = p.suffix.lower()
         mime, _ = mimetypes.guess_type(str(p))
         mime = mime or "application/octet-stream"
         try:
+            # קבצי Office - מחלצים טקסט ומעבירים כטקסט
+            if ext in office_exts:
+                text = _extract_office_text(p)
+                if text:
+                    parts.append(types.Part(text=f"\n\nתוכן הקובץ '{p.name}':\n{text}"))
             # תמונות קטנות - שולחים ישירות (inline), עם המרה לפורמט נתמך אם צריך
-            if mime.startswith("image/") and p.stat().st_size < 15 * 1024 * 1024:
+            elif mime.startswith("image/") and p.stat().st_size < 15 * 1024 * 1024:
                 data, send_mime = _to_supported_image(p, mime)
                 parts.append(types.Part.from_bytes(data=data, mime_type=send_mime))
             else:
-                # סרטונים/קבצים גדולים - מעלים דרך Files API
+                # סרטונים/PDF/קבצים גדולים - מעלים דרך Files API
                 uploaded = client.files.upload(file=str(p))
                 parts.append(types.Part.from_uri(file_uri=uploaded.uri, mime_type=uploaded.mime_type))
         except Exception as e:
