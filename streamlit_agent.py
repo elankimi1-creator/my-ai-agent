@@ -1026,7 +1026,30 @@ def generate_with_retry(client, **kwargs):
     raise RuntimeError("Gemini לא הגיב (עומס שרת חזק).")
 
 
-def call_agent_gemini(history: list, api_key: str = None) -> str:
+def _build_media_parts(client, paths: list) -> list:
+    """יוצר חלקי מדיה (תמונה/סרטון/PDF) כדי ש-Gemini יוכל לראות ולנתח את התוכן."""
+    import mimetypes
+    parts = []
+    for path_str in paths or []:
+        p = Path(path_str)
+        if not p.exists():
+            continue
+        mime, _ = mimetypes.guess_type(str(p))
+        mime = mime or "application/octet-stream"
+        try:
+            # תמונות קטנות - שולחים ישירות (inline)
+            if mime.startswith("image/") and p.stat().st_size < 15 * 1024 * 1024:
+                parts.append(types.Part.from_bytes(data=p.read_bytes(), mime_type=mime))
+            else:
+                # סרטונים/קבצים גדולים - מעלים דרך Files API
+                uploaded = client.files.upload(file=str(p))
+                parts.append(types.Part.from_uri(file_uri=uploaded.uri, mime_type=uploaded.mime_type))
+        except Exception as e:
+            st.toast(f"⚠️ לא הצלחתי לצרף את {p.name}: {e}")
+    return parts
+
+
+def call_agent_gemini(history: list, api_key: str = None, attachments: list = None) -> str:
     client = get_gemini_client(api_key)
     tool_config = types.Tool(function_declarations=[
         types.FunctionDeclaration(name=t["name"], description=t["description"], parameters=t["parameters"])
@@ -1036,6 +1059,11 @@ def call_agent_gemini(history: list, api_key: str = None) -> str:
         types.Content(role="model" if m["role"] == "assistant" else "user", parts=[types.Part(text=m["content"])])
         for m in history if m["role"] in ("user", "assistant") and m.get("content")
     ]
+
+    # מצרף את התמונות/סרטונים עצמם להודעה האחרונה כדי שהסוכן יראה את התוכן
+    if attachments and contents and contents[-1].role == "user":
+        media_parts = _build_media_parts(client, attachments)
+        contents[-1].parts.extend(media_parts)
 
     for _ in range(MAX_TOOL_ROUNDS):
         response = generate_with_retry(
@@ -1124,12 +1152,12 @@ def call_agent_iac(history: list) -> str:
     return "הגעתי למספר המקסימלי של שלבים מבלי לסיים את המשימה."
 
 
-def call_agent(history: list) -> str:
+def call_agent(history: list, attachments: list = None) -> str:
     keys = load_gemini_keys()
     # מנסה כל מפתח Gemini בתורו; אם אחד מיצה את המכסה - עובר לבא
     for i, key in enumerate(keys):
         try:
-            return call_agent_gemini(history, api_key=key)
+            return call_agent_gemini(history, api_key=key, attachments=attachments)
         except Exception as e:
             if is_gemini_quota_error(e):
                 if i < len(keys) - 1:
@@ -1280,9 +1308,13 @@ user_prompt = st.chat_input("כתוב הודעה...")
 
 if user_prompt:
     full_prompt = user_prompt
-    if st.session_state.uploaded_paths:
-        attachments = ", ".join(st.session_state.uploaded_paths)
-        full_prompt += f"\n\n(קבצים מצורפים שזמינים בדיסק לקריאה/עיבוד: {attachments})"
+    current_attachments = list(st.session_state.uploaded_paths)
+    if current_attachments:
+        names = ", ".join(Path(p).name for p in current_attachments)
+        full_prompt += (
+            f"\n\n(המשתמש צירף את הקבצים הבאים ואתה יכול לראות/לנתח את התוכן שלהם ישירות: {names}. "
+            f"הנתיבים בדיסק לעיבוד נוסף: {', '.join(current_attachments)})"
+        )
 
     st.session_state.chat_history.append({"role": "user", "content": full_prompt})
 
@@ -1296,7 +1328,7 @@ if user_prompt:
         response_placeholder.markdown("חושב...")
 
         try:
-            assistant_reply = call_agent(st.session_state.chat_history)
+            assistant_reply = call_agent(st.session_state.chat_history, attachments=current_attachments)
             response_placeholder.markdown(assistant_reply)
         except Exception as e:
             assistant_reply = f"שגיאה: {str(e)}"
