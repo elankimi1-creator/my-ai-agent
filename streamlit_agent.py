@@ -1026,6 +1026,28 @@ def generate_with_retry(client, **kwargs):
     raise RuntimeError("Gemini לא הגיב (עומס שרת חזק).")
 
 
+# פורמטים של תמונה ש-Gemini תומך בהם ישירות
+GEMINI_IMAGE_MIMES = {"image/png", "image/jpeg", "image/webp", "image/heic", "image/heif"}
+
+
+def _to_supported_image(p: Path, mime: str):
+    """ממיר תמונות בפורמט לא נתמך (TIFF/BMP/GIF וכו') ל-PNG כדי ש-Gemini יוכל לראות אותן."""
+    if mime in GEMINI_IMAGE_MIMES:
+        return p.read_bytes(), mime
+    try:
+        from PIL import Image
+        import io as _io
+        img = Image.open(p)
+        if img.mode not in ("RGB", "RGBA"):
+            img = img.convert("RGB")
+        buf = _io.BytesIO()
+        img.save(buf, format="PNG")
+        return buf.getvalue(), "image/png"
+    except Exception:
+        # אם ההמרה נכשלה - שולחים כמו שהוא ומקווים לטוב
+        return p.read_bytes(), mime
+
+
 def _build_media_parts(client, paths: list) -> list:
     """יוצר חלקי מדיה (תמונה/סרטון/PDF) כדי ש-Gemini יוכל לראות ולנתח את התוכן."""
     import mimetypes
@@ -1037,9 +1059,10 @@ def _build_media_parts(client, paths: list) -> list:
         mime, _ = mimetypes.guess_type(str(p))
         mime = mime or "application/octet-stream"
         try:
-            # תמונות קטנות - שולחים ישירות (inline)
+            # תמונות קטנות - שולחים ישירות (inline), עם המרה לפורמט נתמך אם צריך
             if mime.startswith("image/") and p.stat().st_size < 15 * 1024 * 1024:
-                parts.append(types.Part.from_bytes(data=p.read_bytes(), mime_type=mime))
+                data, send_mime = _to_supported_image(p, mime)
+                parts.append(types.Part.from_bytes(data=data, mime_type=send_mime))
             else:
                 # סרטונים/קבצים גדולים - מעלים דרך Files API
                 uploaded = client.files.upload(file=str(p))
