@@ -1186,7 +1186,14 @@ def call_agent(history: list, attachments: list = None) -> str:
                 if i < len(keys) - 1:
                     st.toast(f"⚠️ מפתח Gemini {i + 1} מיצה מכסה - עובר למפתח {i + 2}")
                     continue
-                # כל מפתחות Gemini מוצו - יורדים ל-IAC
+                # כל מפתחות Gemini מוצו. אם יש תמונה/מדיה - IAC לא יודע לראות אותה,
+                # אז עדיף להגיד למשתמש את האמת במקום תשובה שגויה מ-IAC.
+                if attachments:
+                    return (
+                        "⚠️ המכסה היומית של כל מפתחות Gemini נגמרה, ורק Gemini יודע לראות תמונות "
+                        "(הגיבוי IAC מעבד טקסט בלבד). לכן אני לא יכול לנתח את התמונה כרגע. "
+                        "נסה שוב מאוחר יותר (המכסה מתאפסת כל יום), או שלח לי את הטקסט שבתמונה כטקסט."
+                    )
                 if load_iac_token():
                     st.toast("⚠️ כל מפתחות Gemini מוצו - עובר לגיבוי IAC")
                     return call_agent_iac(history)
