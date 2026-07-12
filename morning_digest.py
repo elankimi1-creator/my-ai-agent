@@ -1,78 +1,105 @@
 """
-דוח בוקר אוטומטי: בודק מיילים מהלילה ואירועים של היום בלוח השנה,
+דוח בוקר אוטומטי: בודק מיילים מהלילה (ואירועי יומן אם הוגדר קישור iCal),
 מסכם עם Gemini (או IAC כגיבוי), ושולח מייל סיכום למשתמש.
+
+גרסה חדשה: משתמש ב-IMAP/SMTP עם סיסמת אפליקציה (App Password) במקום OAuth,
+כך שהטוקן לא פג לעולם והדוח לא נשבר.
 
 רץ עצמאי (לא תלוי ב-Streamlit) דרך GitHub Actions, גם כשהמחשב כבוי.
 """
 
-import base64
-import json
+import email
+import imaplib
 import os
-from datetime import datetime, timedelta, timezone
+import smtplib
+import ssl
+from datetime import datetime, timedelta
+from email.header import decode_header, make_header
 from email.mime.text import MIMEText
+from email.utils import parsedate_to_datetime
 
 import requests
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
-from googleapiclient.discovery import build
-
-GOOGLE_SCOPES = [
-    "https://www.googleapis.com/auth/gmail.modify",
-    "https://www.googleapis.com/auth/calendar",
-]
 
 GEMINI_MODEL = "gemini-2.5-flash"
 IAC_BASE_URL = "https://server.iac.ac.il/api/v1/studentapi"
 
 MY_EMAIL = os.environ.get("DIGEST_TO_EMAIL", "elankimi1@gmail.com")
+GMAIL_USER = os.environ.get("GMAIL_USER", MY_EMAIL)
+# סיסמת אפליקציה של Google (16 אותיות, בלי רווחים)
+GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD", "").replace(" ", "")
+# קישור סודי בפורמט iCal ליומן (אופציונלי) - אם ריק, מדלגים על אירועים
+ICAL_URL = os.environ.get("ICAL_URL", "").strip()
 
 
-def get_google_creds():
-    token_json = os.environ["GMAIL_TOKEN_JSON"]
-    creds = Credentials.from_authorized_user_info(json.loads(token_json), GOOGLE_SCOPES)
-    if creds.expired and creds.refresh_token:
-        creds.refresh(Request())
-    return creds
+def _decode(value: str) -> str:
+    try:
+        return str(make_header(decode_header(value)))
+    except Exception:
+        return value or ""
 
 
-def fetch_recent_emails(creds, hours: int = 12) -> str:
-    service = build("gmail", "v1", credentials=creds)
-    after_ts = int((datetime.now(timezone.utc) - timedelta(hours=hours)).timestamp())
-    results = service.users().messages().list(
-        userId="me", q=f"after:{after_ts}", maxResults=20
-    ).execute()
-    messages = results.get("messages", [])
-    if not messages:
+def fetch_recent_emails(hours: int = 12) -> str:
+    """קורא מיילים מהשעות האחרונות דרך IMAP עם סיסמת אפליקציה."""
+    if not GMAIL_APP_PASSWORD:
+        return "(לא הוגדרה סיסמת אפליקציה - אי אפשר לקרוא מיילים)"
+    imap = imaplib.IMAP4_SSL("imap.gmail.com")
+    imap.login(GMAIL_USER, GMAIL_APP_PASSWORD)
+    imap.select("INBOX")
+
+    since_date = (datetime.now() - timedelta(hours=hours)).strftime("%d-%b-%Y")
+    status, data = imap.search(None, f'(SINCE "{since_date}")')
+    ids = data[0].split() if data and data[0] else []
+    if not ids:
+        imap.logout()
         return "אין מיילים חדשים מהלילה."
 
+    cutoff = datetime.now().astimezone() - timedelta(hours=hours)
     summaries = []
-    for msg in messages:
-        full = service.users().messages().get(
-            userId="me", id=msg["id"], format="metadata",
-            metadataHeaders=["From", "Subject"]
-        ).execute()
-        headers = {h["name"]: h["value"] for h in full["payload"]["headers"]}
-        snippet = full.get("snippet", "")
-        summaries.append(f"מאת: {headers.get('From', '?')} | נושא: {headers.get('Subject', '?')} | תקציר: {snippet}")
-    return "\n".join(summaries)
+    for msg_id in ids[-20:]:
+        status, msg_data = imap.fetch(msg_id, "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE)])")
+        if not msg_data or not msg_data[0]:
+            continue
+        msg = email.message_from_bytes(msg_data[0][1])
+        # מסננים לפי זמן אמיתי (SINCE ב-IMAP הוא ברמת יום)
+        try:
+            msg_dt = parsedate_to_datetime(msg.get("Date"))
+            if msg_dt and msg_dt < cutoff:
+                continue
+        except Exception:
+            pass
+        frm = _decode(msg.get("From", "?"))
+        subj = _decode(msg.get("Subject", "(ללא נושא)"))
+        summaries.append(f"מאת: {frm} | נושא: {subj}")
+
+    imap.logout()
+    return "\n".join(summaries) if summaries else "אין מיילים חדשים מהלילה."
 
 
-def fetch_today_events(creds) -> str:
-    service = build("calendar", "v3", credentials=creds)
-    now = datetime.now(timezone.utc)
-    end_of_day = now.replace(hour=23, minute=59, second=59)
-    results = service.events().list(
-        calendarId="primary", timeMin=now.isoformat(), timeMax=end_of_day.isoformat(),
-        singleEvents=True, orderBy="startTime",
-    ).execute()
-    events = results.get("items", [])
-    if not events:
-        return "אין אירועים מתוכננים להיום."
-    summaries = []
-    for ev in events:
-        start = ev["start"].get("dateTime", ev["start"].get("date"))
-        summaries.append(f"{start} | {ev.get('summary', '(ללא כותרת)')}")
-    return "\n".join(summaries)
+def fetch_today_events() -> str:
+    """קורא אירועי היום מקישור iCal סודי (אם הוגדר)."""
+    if not ICAL_URL:
+        return "(לא הוגדר קישור יומן - מדלגים על אירועים)"
+    try:
+        r = requests.get(ICAL_URL, timeout=30)
+        r.raise_for_status()
+        today = datetime.now().date()
+        events = []
+        current = {}
+        for line in r.text.splitlines():
+            if line.startswith("BEGIN:VEVENT"):
+                current = {}
+            elif line.startswith("SUMMARY:"):
+                current["summary"] = line[len("SUMMARY:"):].strip()
+            elif line.startswith("DTSTART"):
+                val = line.split(":", 1)[-1].strip()
+                current["start"] = val
+            elif line.startswith("END:VEVENT"):
+                start = current.get("start", "")
+                if start[:8] == today.strftime("%Y%m%d"):
+                    events.append(f"{start} | {current.get('summary', '(ללא כותרת)')}")
+        return "\n".join(events) if events else "אין אירועים מתוכננים להיום."
+    except Exception as e:
+        return f"(לא הצלחתי לקרוא את היומן: {e})"
 
 
 def summarize_with_gemini(emails_text: str, events_text: str) -> str:
@@ -111,19 +138,22 @@ def summarize_with_iac(emails_text: str, events_text: str) -> str:
     return r.json()["choices"][0]["message"]["content"]
 
 
-def send_digest_email(creds, subject: str, body: str):
-    service = build("gmail", "v1", credentials=creds)
-    message = MIMEText(body)
-    message["to"] = MY_EMAIL
-    message["subject"] = subject
-    raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
-    service.users().messages().send(userId="me", body={"raw": raw}).execute()
+def send_digest_email(subject: str, body: str):
+    """שולח את הדוח דרך SMTP עם סיסמת אפליקציה."""
+    msg = MIMEText(body, _charset="utf-8")
+    msg["From"] = GMAIL_USER
+    msg["To"] = MY_EMAIL
+    msg["Subject"] = subject
+
+    context = ssl.create_default_context()
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=context) as server:
+        server.login(GMAIL_USER, GMAIL_APP_PASSWORD)
+        server.sendmail(GMAIL_USER, [MY_EMAIL], msg.as_string())
 
 
 def main():
-    creds = get_google_creds()
-    emails_text = fetch_recent_emails(creds)
-    events_text = fetch_today_events(creds)
+    emails_text = fetch_recent_emails()
+    events_text = fetch_today_events()
 
     try:
         summary = summarize_with_gemini(emails_text, events_text)
@@ -131,7 +161,7 @@ def main():
         summary = summarize_with_iac(emails_text, events_text)
 
     today_str = datetime.now().strftime("%d/%m/%Y")
-    send_digest_email(creds, f"דוח בוקר - {today_str}", summary)
+    send_digest_email(f"דוח בוקר - {today_str}", summary)
     print("דוח הבוקר נשלח בהצלחה.")
 
 
